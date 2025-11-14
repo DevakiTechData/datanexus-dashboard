@@ -2,22 +2,20 @@ import express from 'express';
 import cors from 'cors';
 import fs from 'fs';
 import path from 'path';
-import XLSX from 'xlsx';
 import Papa from 'papaparse';
 import multer from 'multer';
 import jwt from 'jsonwebtoken';
 import fsPromises from 'fs/promises';
 import { fileURLToPath } from 'url';
 
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 5002;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const DATA_DIR = path.join(__dirname, 'data');
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const CSV_ROOT = path.join(PROJECT_ROOT, 'datanexus-dashboard', 'public');
-const EXCEL_PATH = path.join(DATA_DIR, 'event_inquiries.xlsx');
-const SHEET_NAME = 'Inquiries';
+const CSV_PATH = path.join(DATA_DIR, 'event_inquiries.csv');
 const JWT_SECRET = process.env.JWT_SECRET || 'datanexus-dev-secret';
 const TOKEN_EXPIRY = process.env.JWT_EXPIRY || '2h';
 
@@ -37,6 +35,8 @@ const HEADER_CONFIG = [
   { key: 'notes', heading: 'Notes' },
 ];
 
+const CSV_COLUMNS = HEADER_CONFIG.map((col) => col.key);
+
 const ensureDataDirectory = () => {
   if (!fs.existsSync(DATA_DIR)) {
     fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -44,10 +44,10 @@ const ensureDataDirectory = () => {
 };
 
 const loadExistingRows = () => {
-  if (!fs.existsSync(EXCEL_PATH)) {
+  if (!fs.existsSync(CSV_PATH)) {
     return [];
   }
-  const workbook = XLSX.readFile(EXCEL_PATH);
+  const workbook = XLSX.readFile(CSV_PATH);
   const worksheet = workbook.Sheets[workbook.SheetNames[0]];
   const existing = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
 
@@ -77,7 +77,7 @@ const writeRowsToWorkbook = (rows) => {
   const worksheet = XLSX.utils.aoa_to_sheet([headerRow, ...dataRows]);
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, worksheet, SHEET_NAME);
-  XLSX.writeFile(workbook, EXCEL_PATH);
+  XLSX.writeFile(workbook, CSV_PATH);
 };
 
 const appendInquiryToExcel = (inquiry) => {
