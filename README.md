@@ -1,6 +1,6 @@
 # DataNexus Dashboard
 
-DataNexus is Saint Louis University’s analytics command center for alumni engagement and employer partnerships. It bundles a modern React experience, a secure Express API, and curated CSV/Excel data sources to deliver descriptive, diagnostic, and predictive insights with role-based access.
+DataNexus is Saint Louis University’s analytics command center for alumni engagement and employer partnerships. It bundles a modern React experience, a secure Express API, and curated CSV data sources to deliver descriptive, diagnostic, and predictive insights with role-based access.
 
 ---
 
@@ -43,7 +43,7 @@ DataNexus is Saint Louis University’s analytics command center for alumni enga
 | Layer | Description |
 | ----- | ----------- |
 | **Frontend** | React 18 + Vite build pipeline, TailwindCSS for theming, Recharts/Plotly for charts, React Router for navigation, and a context-driven auth client. |
-| **Backend API** | Express 4 server providing JWT authentication, CSV/Excel CRUD, image uploads via Multer, and assistant query logic. |
+| **Backend API** | Express 4 server providing JWT authentication, CSV persistence (admin tables + inquiries), image uploads via Multer, and assistant query logic. |
 | **Data Layer** | Source-of-truth CSVs (dimension & fact tables) under `datanexus-dashboard/public/`, uploaded imagery in `public/assets`, event inquiries captured in `server/data/event_inquiries.xlsx`. |
 | **Assistant Layer** | Currently a curated Q&A knowledge base in the React app (previous RAG hooks remain ready for future integration with vector search). |
 
@@ -62,7 +62,7 @@ DataNexus is Saint Louis University’s analytics command center for alumni enga
 
 ### 1.4 Data Refresh & Storage
 - CSVs: Updated via admin table CRUD or by replacing files in `public/`. PapaParse keeps type fidelity when reading/writing.
-- Excel: Event inquiries append rows to `server/data/event_inquiries.xlsx`; the workbook is auto-created with headers.
+- Event inquiries append rows to `server/data/event_inquiries.csv`; the file is auto-created with headers.
 - Images: Uploads stored under `public/assets/<category>/` with auto-generated safe filenames.
 - Assistant KB: Pre-loaded within the React bundle; future-ready for calling `/api/assistant/query` once a RAG pipeline is provisioned.
 
@@ -72,6 +72,7 @@ DataNexus is Saint Louis University’s analytics command center for alumni enga
 - Tokens expire per `JWT_EXPIRY` (default 2h); frontend auto-clears on invalid token.
 - Protected API routes validate bearer token before touching the filesystem.
 - Multer upload pipeline sanitizes filenames, enforces category-level directories, and prevents path traversal.
+- Inquiry persistence now uses CSV only—removing the vulnerable `xlsx` dependency flagged in GHSA-4r6h-8v6p-xvw6 / GHSA-5pgg-2g8v-p4x9.
 - CORS defaults to open in dev; restrict origins for production.
 - No passwords are stored in plaintext beyond the seeded demo data—replace `users.json` with hashed entries before production.
 
@@ -102,7 +103,7 @@ DataNexus is Saint Louis University’s analytics command center for alumni enga
 ### 2.4 Community & Support Pages
 - **Gallery** – Hero carousel and filterable grid, driven by `GALLERY_ITEMS`. Admins can upload supporting imagery via the Image Library.
 - **Events** – Lists upcoming programming, multi-audience filters, call-to-action to submit inquiries.
-- **Contact / Inquiry** – Stores submissions in the Excel workbook and surfaces confirmation messaging.
+- **Contact / Inquiry** – Stores submissions in the CSV-backed inquiry log and surfaces confirmation messaging.
 
 ### 2.5 Admin Console
 - **Data Tables** – CRUD interface for student, employer, contact, event, date, and alumni engagement tables. Entries persist to CSV with schema validation (primary-key enforcement, column mapping).
@@ -123,7 +124,7 @@ DataNexus is Saint Louis University’s analytics command center for alumni enga
 | **Dashboards → Employers** | `/dashboards/employers` | Admin, Employer | Employer KPIs, pipeline waterfall, hiring trends, diversity mix, churn alerts, predictions panel. |
 | **Community → Gallery** | `/gallery` | Admin, Alumni, Employer | Filterable gallery of alumni/employer imagery, event spotlights. |
 | **Community → Events** | `/events` | Admin, Alumni, Employer | Upcoming events, RSVP calls-to-action, audience filters. |
-| **Community → Contact** | `/contact` | Admin, Alumni, Employer | Inquiry form writing to Excel workbook; confirmation message on success. |
+| **Community → Contact** | `/contact` | Admin, Alumni, Employer | Inquiry form writing to CSV-backed log; confirmation message on success. |
 | **Insights → Predictive Outlook** | `/predictions` | Admin | Tabbed forecasts (Alumni, Employers) with charts and recommended actions. |
 | **Connect → Mentorship & Resources** | `/connect` (if enabled) | Authenticated users | Resource cards, mentorship program details, quick contacts. |
 | **Admin** | `/admin` | Admin | Data tables CRUD, image library, system overview, analytics operations checklist. |
@@ -311,7 +312,7 @@ npm run start   # production start (node index.js)
 ```
 - Render/Railway/Fly.io/Heroku friendly.
 - Configure environment variables (`PORT`, `JWT_SECRET`, `JWT_EXPIRY`).
-- Ensure persistent storage or migrate CSV/Excel persistence to a managed database if scaling beyond single instance.
+- Ensure persistent storage or migrate CSV persistence to a managed database if scaling beyond single instance.
 
 ### CORS
 Limit allowed origins before going live:
@@ -346,7 +347,8 @@ Seeded credentials live in `server/data/users.json` for local testing:
 | Date | Area | Summary |
 | ---- | ---- | ------- |
 | Week 1 | Project recovery | Restored React app styling, re-linked assets, fixed login errors. |
-| Week 2 | Auth & API | Added JWT auth, protected routes, role-aware navigation, and Excel inquiry persistence. |
+| Week 2 | Auth & API | Added JWT auth, protected routes, role-aware navigation, and initial inquiry persistence. |
+| Week 9 | Security hardening | Replaced Excel persistence with CSV to remove the `xlsx` dependency flagged for high-severity vulnerabilities. |
 | Week 3 | Dashboards overhaul | Replaced placeholder charts with 10+ descriptive analytics each for alumni/employer dashboards; added narrative analysis. |
 | Week 4 | Visual polish | Introduced `ChartCard`, improved responsive layouts, ensured labels and data fit within chart bounds. |
 | Week 5 | Predictive Outlook | Built new `/predictions` section with admin-only access and dedicated alumni/employer forecasts. |
