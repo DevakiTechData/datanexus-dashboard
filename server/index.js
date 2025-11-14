@@ -2,20 +2,19 @@ import express from 'express';
 import cors from 'cors';
 import fs from 'fs';
 import path from 'path';
-import XLSX from 'xlsx';
 import Papa from 'papaparse';
 import multer from 'multer';
 import { fileURLToPath } from 'url';
 
-const PORT = process.env.PORT || 5000;
+// Default to 5002 to avoid conflicts with macOS Control Center (uses 5000/5001).
+const PORT = process.env.PORT || 5002;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const DATA_DIR = path.join(__dirname, 'data');
 const PROJECT_ROOT = path.resolve(__dirname, '..');
-const CSV_ROOT = path.join(PROJECT_ROOT, 'datanexus-dashboard', 'public');
-const EXCEL_PATH = path.join(DATA_DIR, 'event_inquiries.xlsx');
-const SHEET_NAME = 'Inquiries';
+const CSV_ROOT = path.join(PROJECT_ROOT, 'public');
+const CSV_PATH = path.join(DATA_DIR, 'event_inquiries.csv');
 
 const HEADER_CONFIG = [
   { key: 'submittedAt', heading: 'Submitted At' },
@@ -39,48 +38,45 @@ const ensureDataDirectory = () => {
   }
 };
 
+const CSV_COLUMNS = HEADER_CONFIG.map((col) => col.key);
+
 const loadExistingRows = () => {
-  if (!fs.existsSync(EXCEL_PATH)) {
+  if (!fs.existsSync(CSV_PATH)) {
     return [];
   }
-  const workbook = XLSX.readFile(EXCEL_PATH);
-  const worksheet = workbook.Sheets[workbook.SheetNames[0]];
-  const existing = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
 
-  return existing.map((row) => ({
-    submittedAt: row['Submitted At'] ?? '',
-    firstName: row['First Name'] ?? '',
-    lastName: row['Last Name'] ?? '',
-    email: row['Email'] ?? '',
-    phone: row['Phone Number'] ?? '',
-    audienceType: row['Audience Type'] ?? '',
-    companyName: row['Company Name'] ?? '',
-    studentId: row['Student ID'] ?? '',
-    currentCompany: row['Current Company'] ?? '',
-    relationshipInterest: row['Relationship Interest'] ?? '',
-    applicationsSubmitted: row['Applications Submitted'] ?? '',
-    upcomingEventId: row['Upcoming Event'] ?? '',
-    notes: row['Notes'] ?? '',
-  }));
+  const fileContents = fs.readFileSync(CSV_PATH, 'utf8');
+  const parsed = Papa.parse(fileContents, { header: true, skipEmptyLines: true });
+
+  if (parsed.errors.length > 0) {
+    const errorMessages = parsed.errors.map((error) => error.message).join('; ');
+    throw new Error(`Failed to parse inquiries CSV: ${errorMessages}`);
+  }
+
+  return parsed.data.map((row) => {
+    const normalized = {};
+    CSV_COLUMNS.forEach((column) => {
+      normalized[column] = row[column] ?? '';
+    });
+    return normalized;
+  });
 };
 
-const writeRowsToWorkbook = (rows) => {
-  const headerRow = HEADER_CONFIG.map((col) => col.heading);
-  const dataRows = rows.map((row) =>
-    HEADER_CONFIG.map((col) => (row[col.key] !== undefined ? row[col.key] : '')),
-  );
+const writeRowsToCsv = (rows) => {
+  const csv = Papa.unparse(rows, {
+    columns: CSV_COLUMNS,
+    header: true,
+    skipEmptyLines: true,
+  });
 
-  const worksheet = XLSX.utils.aoa_to_sheet([headerRow, ...dataRows]);
-  const workbook = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(workbook, worksheet, SHEET_NAME);
-  XLSX.writeFile(workbook, EXCEL_PATH);
+  fs.writeFileSync(CSV_PATH, `${csv}\n`, 'utf8');
 };
 
-const appendInquiryToExcel = (inquiry) => {
+const appendInquiryToCsv = (inquiry) => {
   ensureDataDirectory();
   const rows = loadExistingRows();
   rows.push(inquiry);
-  writeRowsToWorkbook(rows);
+  writeRowsToCsv(rows);
 };
 
 const ADMIN_TABLES = {
@@ -224,6 +220,235 @@ const upload = multer({
   limits: { fileSize: 10 * 1024 * 1024 },
 });
 
+const stripQuotes = (value) => {
+  if (typeof value !== 'string') return value;
+  return value.trim().replace(/^"|"$/g, '');
+};
+
+const assistantCache = {};
+
+const parseCsvClean = (filePath) => {
+  const csvString = fs.readFileSync(filePath, 'utf-8');
+  const parsed = Papa.parse(csvString, {
+    header: true,
+    skipEmptyLines: true,
+  });
+
+  return parsed.data.map((row) => {
+    const clean = {};
+    Object.entries(row).forEach(([key, value]) => {
+      const cleanKey = stripQuotes(key);
+      clean[cleanKey] = stripQuotes(value);
+    });
+    return clean;
+  });
+};
+
+const loadAssistantTable = (tableId) => {
+  if (!assistantCache[tableId]) {
+    const config = ADMIN_TABLES[tableId];
+    if (!config) throw new Error(`Assistant table ${tableId} not found`);
+    assistantCache[tableId] = parseCsvClean(config.filePath);
+  }
+  return assistantCache[tableId];
+};
+
+const titleCase = (text = '') =>
+  text
+    .split(' ')
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+
+const buildProgramStatsResponse = (programTerm, role) => {
+  const students = loadAssistantTable('students');
+  const engagements = loadAssistantTable('alumniEngagement');
+
+  const term = programTerm.toLowerCase();
+  const matchedStudents = students.filter((student) =>
+    (student.program_name || '').toLowerCase().includes(term),
+  );
+  const matchedStudentKeys = new Set(matchedStudents.map((student) => stripQuotes(student.student_key)));
+
+  const engaged = new Set();
+  engagements.forEach((row) => {
+    const studentKey = stripQuotes(row.student_key);
+    if (matchedStudentKeys.has(studentKey) && Number(row.engagement_score || 0) > 0) {
+      engaged.add(studentKey);
+    }
+  });
+
+  const total = matchedStudents.length;
+  const engagedCount = engaged.size;
+
+  if (total === 0) {
+    return {
+      message: `I couldn't find alumni records for ${programTerm}. Try another program or check the latest roster upload.`,
+    };
+  }
+
+  const base = `We track ${total} alumni in ${titleCase(programTerm)} with ${engagedCount} showing active engagement recently.`;
+
+  if (role === 'admin') {
+    const sample = matchedStudents
+      .slice(0, 5)
+      .map((student) => `${student.first_name} ${student.last_name} (${student.graduation_year})`)
+      .join(', ');
+    return {
+      message: `${base}\nSample alumni: ${sample}.`,
+    };
+  }
+
+  return { message: `${base}\nAsk an administrator for named lists if you need direct outreach.` };
+};
+
+const buildRoleLocationEmployerResponse = ({ jobTerm, locationTerm, employerTerm, role }) => {
+  const engagements = loadAssistantTable('alumniEngagement');
+  const students = loadAssistantTable('students');
+  const employers = loadAssistantTable('employers');
+
+  const employersByKey = new Map(
+    employers.map((employer) => [stripQuotes(employer.employer_key), employer]),
+  );
+  const studentsByKey = new Map(
+    students.map((student) => [stripQuotes(student.student_key), student]),
+  );
+
+  const jobLower = jobTerm.toLowerCase();
+  const locationLower = locationTerm.toLowerCase();
+  const employerLower = employerTerm.toLowerCase();
+
+  const matches = engagements.filter((engagement) => {
+    const employer = employersByKey.get(stripQuotes(engagement.employer_key));
+    if (!employer) return false;
+
+    const jobMatch = (engagement.job_role || '').toLowerCase().includes(jobLower);
+    const employerMatch = (employer.employer_name || '').toLowerCase().includes(employerLower);
+    const locationMatches =
+      (employer.hq_state || '').toLowerCase().includes(locationLower) ||
+      (employer.hq_city || '').toLowerCase().includes(locationLower);
+
+    return jobMatch && employerMatch && locationMatches;
+  });
+
+  if (matches.length === 0) {
+    return {
+      message: `No alumni matched ${jobTerm} at ${employerTerm} in ${locationTerm}. Try broadening the role or location filters.`,
+    };
+  }
+
+  const studentEntries = matches
+    .map((match) => studentsByKey.get(stripQuotes(match.student_key)))
+    .filter(Boolean);
+
+  if (role !== 'admin') {
+    return {
+      message: `Found ${studentEntries.length} alumni matching ${jobTerm} at ${employerTerm} in ${locationTerm}. Contact an administrator for individual details.`,
+    };
+  }
+
+  const list = studentEntries
+    .slice(0, 5)
+    .map((student) => `${student.first_name} ${student.last_name} (${student.graduation_year}, ${student.program_name})`)
+    .join('\n• ');
+
+  return {
+    message: `Found ${studentEntries.length} alumni in ${titleCase(locationTerm)} at ${employerTerm}.\n• ${list}`,
+  };
+};
+
+const buildEmployerPatternResponse = (role) => {
+  const employers = loadAssistantTable('employers');
+  const engagements = loadAssistantTable('alumniEngagement');
+  const students = loadAssistantTable('students');
+
+  const amazonEmployers = employers.filter((employer) =>
+    (employer.employer_name || '').toLowerCase().includes('amazon'),
+  );
+
+  const employersByKey = new Map(
+    employers.map((employer) => [stripQuotes(employer.employer_key), employer]),
+  );
+  const studentsByKey = new Map(
+    students.map((student) => [stripQuotes(student.student_key), student]),
+  );
+
+  const targetEmployers = amazonEmployers.length > 0 ? amazonEmployers : employers.filter((employer) => (employer.sector || '').toLowerCase().includes('technology'));
+
+  const targetKeys = new Set(targetEmployers.map((employer) => stripQuotes(employer.employer_key)));
+
+  const relevantEngagements = engagements.filter((engagement) =>
+    targetKeys.has(stripQuotes(engagement.employer_key)),
+  );
+
+  if (relevantEngagements.length === 0) {
+    return {
+      message: 'No matching hiring pattern found for Amazon. Train the model with the latest employer engagement data or upload Amazon-specific cohorts.',
+    };
+  }
+
+  const studentScores = new Map();
+  relevantEngagements.forEach((engagement) => {
+    const studentKey = stripQuotes(engagement.student_key);
+    const currentScore = studentScores.get(studentKey) || 0;
+    studentScores.set(studentKey, currentScore + Number(engagement.engagement_score || 0));
+  });
+
+  const rankedStudents = Array.from(studentScores.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, role === 'admin' ? 5 : 3)
+    .map(([studentKey, score]) => {
+      const student = studentsByKey.get(studentKey);
+      if (!student) return null;
+      return {
+        name: `${student.first_name} ${student.last_name}`,
+        program: student.program_name,
+        graduation: student.graduation_year,
+        confidence: Math.min(0.95, 0.7 + score / 20),
+      };
+    })
+    .filter(Boolean);
+
+  if (rankedStudents.length === 0) {
+    return {
+      message: 'No students matched the Amazon hiring pattern. Encourage cloud-focused cohorts to boost alignment.',
+    };
+  }
+
+  const list = rankedStudents
+    .map(
+      (student) =>
+        `${student.name} – ${student.program} (${student.graduation}) • ${(student.confidence * 100).toFixed(0)}% alignment`,
+    )
+    .join('\n');
+
+  return {
+    message: `Based on recent tech-sector hires, these students align with Amazon's pattern:\n${list}\n\nRecommendation: invite them to the Amazon interview prep track and emphasize AWS/data engineering skills.`,
+  };
+};
+
+const buildFallbackResponse = () => ({
+  message:
+    "I'm still learning that query. Try asking about alumni counts, employer trends, or predictive outlook data—or email insights@datanexus.ai for a detailed report.",
+});
+
+const buildAssistantResponse = (question, role) => {
+  const lower = question.toLowerCase();
+
+  if (lower.includes('full stack') && lower.includes('california') && lower.includes('mckinsey')) {
+    return buildRoleLocationEmployerResponse({ jobTerm: 'Full Stack', locationTerm: 'California', employerTerm: 'McKinsey', role });
+  }
+
+  if (lower.includes('data analytics') && lower.includes('alumni')) {
+    return buildProgramStatsResponse('Data Analytics', role);
+  }
+
+  if (lower.includes('predict') && lower.includes('amazon')) {
+    return buildEmployerPatternResponse(role);
+  }
+
+  return buildFallbackResponse();
+};
+
 const getImageCategory = (categoryId) => {
   const category = IMAGE_CATEGORIES[categoryId];
   if (!category) {
@@ -299,11 +524,11 @@ app.post('/api/inquiries', (req, res) => {
       notes,
     };
 
-    appendInquiryToExcel(formattedRow);
-    res.status(201).json({ message: 'Inquiry stored successfully in Excel.' });
+    appendInquiryToCsv(formattedRow);
+    res.status(201).json({ message: 'Inquiry stored successfully.' });
   } catch (error) {
     console.error('Failed to store inquiry', error);
-    res.status(500).json({ error: 'Failed to store inquiry.' });
+    res.status(500).json({ error: error.message || 'Failed to store inquiry.' });
   }
 });
 
@@ -396,6 +621,28 @@ app.delete('/api/admin/images/:category/:filename', (req, res) => {
   } catch (error) {
     console.error('Failed to delete image', error);
     res.status(error.status || 500).json({ error: error.message || 'Failed to delete image.' });
+  }
+});
+
+const ASSISTANT_ROLES = new Set(['admin', 'alumni', 'employer']);
+
+app.post('/api/assistant/query', (req, res) => {
+  try {
+    const { question, role } = req.body ?? {};
+
+    if (!question || !role) {
+      return res.status(400).json({ error: 'Question and role are required.' });
+    }
+
+    if (!ASSISTANT_ROLES.has(role)) {
+      return res.status(403).json({ error: 'Role not permitted for assistant access.' });
+    }
+
+    const response = buildAssistantResponse(question, role);
+    res.json(response);
+  } catch (error) {
+    console.error('Assistant query failed', error);
+    res.status(500).json({ error: 'Assistant query failed.' });
   }
 });
 
