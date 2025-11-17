@@ -62,7 +62,7 @@ const Events = () => {
   const [submitting, setSubmitting] = useState(false);
   const [formFeedback, setFormFeedback] = useState(null);
 
-  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000';
+  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5002';
 
   useEffect(() => {
     const fetchData = async () => {
