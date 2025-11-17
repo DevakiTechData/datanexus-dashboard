@@ -4,10 +4,10 @@ import fs from 'fs';
 import path from 'path';
 import Papa from 'papaparse';
 import multer from 'multer';
+import jwt from 'jsonwebtoken';
 import { fileURLToPath } from 'url';
 
-// Default to 5002 to avoid conflicts with macOS Control Center (uses 5000/5001).
-const PORT = process.env.PORT || 5002;
+const PORT = process.env.PORT || 5001;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -15,6 +15,10 @@ const DATA_DIR = path.join(__dirname, 'data');
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const CSV_ROOT = path.join(PROJECT_ROOT, 'public');
 const CSV_PATH = path.join(DATA_DIR, 'event_inquiries.csv');
+
+const JWT_SECRET = process.env.JWT_SECRET || 'change-me';
+const JWT_EXPIRY = process.env.JWT_EXPIRY || '2h';
+const USERS_PATH = path.join(DATA_DIR, 'users.json');
 
 const HEADER_CONFIG = [
   { key: 'submittedAt', heading: 'Submitted At' },
@@ -39,6 +43,28 @@ const ensureDataDirectory = () => {
 };
 
 const CSV_COLUMNS = HEADER_CONFIG.map((col) => col.key);
+
+const loadUsers = () => {
+  if (!fs.existsSync(USERS_PATH)) {
+    throw new Error('User store is missing. Seed server/data/users.json.');
+  }
+  const fileContents = fs.readFileSync(USERS_PATH, 'utf8');
+  const parsed = JSON.parse(fileContents);
+  if (!Array.isArray(parsed)) {
+    throw new Error('User store is malformed.');
+  }
+  return parsed;
+};
+
+const findUserByCredentials = (username, password) => {
+  const normalizedUsername = (username || '').trim().toLowerCase();
+  const users = loadUsers();
+  return users.find(
+    (user) =>
+      (user.username || '').toLowerCase() === normalizedUsername &&
+      user.password === password,
+  );
+};
 
 const loadExistingRows = () => {
   if (!fs.existsSync(CSV_PATH)) {
@@ -219,6 +245,39 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 },
 });
+
+const extractBearerToken = (header = '') => {
+  if (typeof header !== 'string') return null;
+  const trimmed = header.trim();
+  if (!trimmed.toLowerCase().startsWith('bearer ')) {
+    return null;
+  }
+  return trimmed.slice(7).trim();
+};
+
+const authenticateRequest = (req, res, next) => {
+  try {
+    const token = extractBearerToken(req.headers.authorization);
+    if (!token) {
+      return res.status(401).json({ error: 'Authentication required.' });
+    }
+    req.user = jwt.verify(token, JWT_SECRET);
+    next();
+  } catch (error) {
+    console.error('Auth verification failed', error);
+    const status = error.name === 'TokenExpiredError' ? 401 : 401;
+    const message =
+      error.name === 'TokenExpiredError' ? 'Session expired.' : 'Invalid token.';
+    res.status(status).json({ error: message });
+  }
+};
+
+const requireAdmin = (req, res, next) => {
+  if (req.user?.role !== 'admin') {
+    return res.status(403).json({ error: 'Admin privileges required.' });
+  }
+  next();
+};
 
 const stripQuotes = (value) => {
   if (typeof value !== 'string') return value;
@@ -485,6 +544,27 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok' });
 });
 
+app.post('/api/auth/login', (req, res) => {
+  try {
+    const { username, password } = req.body ?? {};
+    if (!username || !password) {
+      return res.status(400).json({ error: 'Username and password are required.' });
+    }
+
+    const user = findUserByCredentials(username, password);
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid credentials.' });
+    }
+
+    const payload = { username: user.username, role: user.role };
+    const token = jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRY });
+    res.json({ token, user: payload });
+  } catch (error) {
+    console.error('Login failed', error);
+    res.status(500).json({ error: 'Failed to authenticate.' });
+  }
+});
+
 app.post('/api/inquiries', (req, res) => {
   try {
     const {
@@ -532,7 +612,7 @@ app.post('/api/inquiries', (req, res) => {
   }
 });
 
-app.get('/api/admin/images', (req, res) => {
+app.get('/api/admin/images', authenticateRequest, requireAdmin, (req, res) => {
   try {
     const { category } = req.query ?? {};
 
@@ -568,7 +648,7 @@ app.get('/api/admin/images', (req, res) => {
   }
 });
 
-app.post('/api/admin/images', upload.single('image'), (req, res) => {
+app.post('/api/admin/images', authenticateRequest, requireAdmin, upload.single('image'), (req, res) => {
   try {
     const { category } = req.body ?? {};
     if (!category) {
@@ -603,7 +683,7 @@ app.post('/api/admin/images', upload.single('image'), (req, res) => {
   }
 });
 
-app.delete('/api/admin/images/:category/:filename', (req, res) => {
+app.delete('/api/admin/images/:category/:filename', authenticateRequest, requireAdmin, (req, res) => {
   try {
     const { category, filename } = req.params;
     const categoryInfo = getImageCategory(category);
@@ -646,7 +726,7 @@ app.post('/api/assistant/query', (req, res) => {
   }
 });
 
-app.get('/api/admin/tables', (req, res) => {
+app.get('/api/admin/tables', authenticateRequest, requireAdmin, (req, res) => {
   try {
     const tables = Object.entries(ADMIN_TABLES).map(([id, tableConfig]) => {
       const { columns } = loadTableData(id);
@@ -665,7 +745,7 @@ app.get('/api/admin/tables', (req, res) => {
   }
 });
 
-app.get('/api/admin/tables/:tableId', (req, res) => {
+app.get('/api/admin/tables/:tableId', authenticateRequest, requireAdmin, (req, res) => {
   try {
     const { tableId } = req.params;
     const { config, columns, rows } = loadTableData(tableId);
@@ -682,7 +762,7 @@ app.get('/api/admin/tables/:tableId', (req, res) => {
   }
 });
 
-app.post('/api/admin/tables/:tableId', (req, res) => {
+app.post('/api/admin/tables/:tableId', authenticateRequest, requireAdmin, (req, res) => {
   try {
     const { tableId } = req.params;
     const { record } = req.body ?? {};
@@ -711,7 +791,7 @@ app.post('/api/admin/tables/:tableId', (req, res) => {
   }
 });
 
-app.put('/api/admin/tables/:tableId/:recordId', (req, res) => {
+app.put('/api/admin/tables/:tableId/:recordId', authenticateRequest, requireAdmin, (req, res) => {
   try {
     const { tableId, recordId } = req.params;
     const { record } = req.body ?? {};
@@ -747,7 +827,7 @@ app.put('/api/admin/tables/:tableId/:recordId', (req, res) => {
   }
 });
 
-app.delete('/api/admin/tables/:tableId/:recordId', (req, res) => {
+app.delete('/api/admin/tables/:tableId/:recordId', authenticateRequest, requireAdmin, (req, res) => {
   try {
     const { tableId, recordId } = req.params;
     const { config, columns, rows } = loadTableData(tableId);
