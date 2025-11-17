@@ -4,6 +4,8 @@ import fs from 'fs';
 import path from 'path';
 import Papa from 'papaparse';
 import multer from 'multer';
+import crypto from 'node:crypto';
+import process from 'node:process';
 import jwt from 'jsonwebtoken';
 import { fileURLToPath } from 'url';
 
@@ -12,6 +14,7 @@ const PORT = process.env.PORT || 5001;
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const DATA_DIR = path.join(__dirname, 'data');
+const USERS_PATH = path.join(DATA_DIR, 'users.json');
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const CSV_ROOT = path.join(PROJECT_ROOT, 'public');
 const CSV_PATH = path.join(DATA_DIR, 'event_inquiries.csv');
@@ -286,6 +289,32 @@ const stripQuotes = (value) => {
 
 const assistantCache = {};
 
+const loadAuthUsers = () => {
+  if (!fs.existsSync(USERS_PATH)) {
+    throw new Error('User directory not initialized.');
+  }
+  const contents = fs.readFileSync(USERS_PATH, 'utf-8');
+  try {
+    const parsed = JSON.parse(contents);
+    if (!Array.isArray(parsed)) {
+      throw new Error('Users file must contain an array.');
+    }
+    return parsed;
+  } catch (error) {
+    throw new Error(`Invalid auth users file: ${error.message}`);
+  }
+};
+
+const normalizeUsername = (value = '') => value.trim().toLowerCase();
+
+const createAuthToken = (username) =>
+  crypto.createHash('sha256').update(`${username}:${Date.now()}:${Math.random()}`).digest('hex');
+
+const ensurePathInside = (parentPath, targetPath) => {
+  const relative = path.relative(parentPath, targetPath);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+};
+
 const parseCsvClean = (filePath) => {
   const csvString = fs.readFileSync(filePath, 'utf-8');
   const parsed = Papa.parse(csvString, {
@@ -423,10 +452,6 @@ const buildEmployerPatternResponse = (role) => {
   const amazonEmployers = employers.filter((employer) =>
     (employer.employer_name || '').toLowerCase().includes('amazon'),
   );
-
-  const employersByKey = new Map(
-    employers.map((employer) => [stripQuotes(employer.employer_key), employer]),
-  );
   const studentsByKey = new Map(
     students.map((student) => [stripQuotes(student.student_key), student]),
   );
@@ -551,6 +576,30 @@ app.post('/api/auth/login', (req, res) => {
       return res.status(400).json({ error: 'Username and password are required.' });
     }
 
+    const users = loadAuthUsers();
+    const normalized = normalizeUsername(username);
+    const match = users.find(
+      (user) =>
+        normalizeUsername(user.username) === normalized &&
+        typeof user.password === 'string' &&
+        user.password === password,
+    );
+
+    if (!match) {
+      return res.status(401).json({ error: 'Invalid credentials.' });
+    }
+
+    const token = createAuthToken(match.username);
+    res.json({
+      token,
+      user: {
+        username: match.username,
+        role: match.role ?? 'admin',
+      },
+    });
+  } catch (error) {
+    console.error('Authentication failed', error);
+    res.status(500).json({ error: 'Authentication failed.' });
     const user = findUserByCredentials(username, password);
     if (!user) {
       return res.status(401).json({ error: 'Invalid credentials.' });
@@ -689,6 +738,10 @@ app.delete('/api/admin/images/:category/:filename', authenticateRequest, require
     const categoryInfo = getImageCategory(category);
     const decodedFilename = decodeURIComponent(filename);
     const filePath = path.join(categoryInfo.absolutePath, decodedFilename);
+
+    if (!ensurePathInside(categoryInfo.absolutePath, filePath)) {
+      return res.status(400).json({ error: 'Invalid filename.' });
+    }
 
     if (!fs.existsSync(filePath)) {
       return res
