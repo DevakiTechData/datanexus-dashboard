@@ -1,6 +1,9 @@
 import { createContext, useContext, useEffect, useMemo, useState } from 'react';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5002';
+// Use explicit URL if set, otherwise use direct URL (CORS enabled on backend)
+// FORCE PORT 5002 - DO NOT USE 5001
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:5002').replace(':5001', ':5002');
+console.log('🚀 AuthContext initialized with API_BASE_URL:', API_BASE_URL, '| ENV:', import.meta.env.VITE_API_BASE_URL);
 const AuthContext = createContext(null);
 const STORAGE_KEY = 'datanexus-auth';
 
@@ -32,7 +35,11 @@ export const AuthProvider = ({ children }) => {
     setLoading(true);
     setError(null);
     try {
-      const response = await fetch(`${API_BASE_URL}/api/auth/login`, {
+      // Force use port 5002 - replace any 5001 with 5002
+      const baseUrl = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:5002').replace(':5001', ':5002');
+      const url = `${baseUrl}/api/auth/login`;
+      console.log('🔍 Login Debug:', { url, baseUrl, env: import.meta.env.VITE_API_BASE_URL, dev: import.meta.env.DEV });
+      const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password }),

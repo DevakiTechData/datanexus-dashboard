@@ -1,3 +1,4 @@
+// Use explicit URL if set, otherwise use direct URL (CORS enabled on backend)
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5002';
 
 const handleResponse = async (response) => {

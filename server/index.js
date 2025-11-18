@@ -7,7 +7,7 @@ import multer from 'multer';
 import jwt from 'jsonwebtoken';
 import { fileURLToPath } from 'url';
 
-const PORT = process.env.PORT || 5001;
+const PORT = process.env.PORT || 5002;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
